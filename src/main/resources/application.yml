@@ -1,0 +1,8 @@
+server:
+  port: 8080
+
+whatsapp:
+  phone-number-id: 742459682291742
+  access-token: EAAcH1LpBFMUBPlf1qUS0saZAwJwvuuU9FgC4zKyUxrtQ25sMP8bArw2Urxv0ONlUdma1zxCydtFZBuvHxzp92n1U1vZCe56JXDT4C2W6cAaoOS3tyrQCH9xcTB6WT6K03EMAgl89ytFZAT3ioIznVK2Qdg0hZAsyKcn9p325URnUfbwLXmiOqYCGGxysJkVYlZCGQsGPTuIZC5zKNuJLRq84aKPI7bZBRZAft2HwdbJRtWR6KptBs
+  verify-token: buyza_token
+  signature-check: false
