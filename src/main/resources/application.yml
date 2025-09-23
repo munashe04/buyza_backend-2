@@ -3,6 +3,12 @@ server:
 
 whatsapp:
   phone-number-id: 742459682291742
-  access-token: EAAcH1LpBFMUBPlf1qUS0saZAwJwvuuU9FgC4zKyUxrtQ25sMP8bArw2Urxv0ONlUdma1zxCydtFZBuvHxzp92n1U1vZCe56JXDT4C2W6cAaoOS3tyrQCH9xcTB6WT6K03EMAgl89ytFZAT3ioIznVK2Qdg0hZAsyKcn9p325URnUfbwLXmiOqYCGGxysJkVYlZCGQsGPTuIZC5zKNuJLRq84aKPI7bZBRZAft2HwdbJRtWR6KptBs
+  access-token: EAAcH1LpBFMUBPjBZC1D0kktoFAmazZAAixifw1GlSlOaBi3hl1huocc48yZAnde8pGtcF40glrfOZAmJTjeWfWZCuuMDNQ1ZAuvYHZCaZBBj9tCVYIh5Op7hOUFxYJZBsNXLS21wZAWgwjjGTm9dqZAswDsMncMjeKHVyf6sLEznUSKUWVyHqDGGN2scXoZAwZA0FZCyzRs5xZAPT1BvvVZAeAEQMklu9JV2pnmP0ONoPUaZC98WQEMtU8qQZD
   verify-token: buyza_token
   signature-check: false
+
+
+
+google:
+  sheets:
+    spreadsheet-id: 1VVFbHbGuSB-MNrRDKkuS6sCjSGABYT6BXNYcb6B5WEU
