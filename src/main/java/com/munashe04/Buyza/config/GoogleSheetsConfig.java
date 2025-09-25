@@ -10,12 +10,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.io.ClassPathResource;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.util.Collections;
+import java.util.Base64;
 
 @Configuration
 public class GoogleSheetsConfig {
@@ -24,35 +25,30 @@ public class GoogleSheetsConfig {
 
     @Bean
     public Sheets sheetsService() throws IOException, GeneralSecurityException {
-        log.info("🔑 Loading Google credentials from classpath...");
-
-        ClassPathResource resource = new ClassPathResource("buyza-bot.json");
-
-        if (!resource.exists()) {
-            throw new IllegalStateException(
-                    "Google credentials file 'buyza-bot.json' not found in classpath. " +
-                            "Please place your credentials file in src/main/resources/buyza-bot.json"
-            );
+        String encodedCreds = System.getenv("GOOGLE_CREDENTIALS_BASE64");
+        if (encodedCreds == null || encodedCreds.isEmpty()) {
+            throw new IllegalStateException("❌ Missing GOOGLE_CREDENTIALS_BASE64 environment variable");
         }
 
-        log.info("✅ Found credentials file: buyza-bot.json");
+        log.info("🔑 Decoding Google credentials from environment...");
 
-        try (InputStream credentialsStream = resource.getInputStream()) {
-            GoogleCredential credential = GoogleCredential.fromStream(credentialsStream)
-                    .createScoped(Collections.singleton(SheetsScopes.SPREADSHEETS));
+        byte[] decodedBytes = Base64.getDecoder().decode(encodedCreds);
+        ByteArrayInputStream credentialsStream = new ByteArrayInputStream(decodedBytes);
 
-            JsonFactory jsonFactory = JacksonFactory.getDefaultInstance();
+        GoogleCredential credential = GoogleCredential.fromStream(credentialsStream)
+                .createScoped(Collections.singleton(SheetsScopes.SPREADSHEETS));
 
-            Sheets sheets = new Sheets.Builder(
-                    GoogleNetHttpTransport.newTrustedTransport(),
-                    jsonFactory,
-                    credential
-            )
-                    .setApplicationName("Buyza Bot")
-                    .build();
+        JsonFactory jsonFactory = JacksonFactory.getDefaultInstance();
 
-            log.info("✅ Google Sheets service initialized successfully");
-            return sheets;
-        }
+        Sheets sheets = new Sheets.Builder(
+                GoogleNetHttpTransport.newTrustedTransport(),
+                jsonFactory,
+                credential
+        )
+                .setApplicationName("Buyza Bot")
+                .build();
+
+        log.info("✅ Google Sheets service initialized successfully");
+        return sheets;
     }
 }
