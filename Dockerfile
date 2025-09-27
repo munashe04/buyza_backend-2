@@ -1,35 +1,13 @@
-# Stage 1 - build
-FROM eclipse-temurin:17-jdk AS build
+FROM eclipse-temurin:17-jre:17-jammy
 WORKDIR /app
 
-# Copy Gradle wrapper and build files
-COPY gradlew .
-COPY gradle gradle
-COPY build.gradle.kts settings.gradle.kts ./
-# Copy whole source
-COPY src src
-
-# Make gradlew executable
-RUN chmod +x gradlew
-
-# Build
-RUN ./gradlew bootJar -x test --no-daemon
-
-# Stage 2 - runtime
-FROM eclipse-temurin:17-jre
-WORKDIR /app
-COPY --from=build /app/build/libs/*.jar app.jar
-
-# Use non-root user for better security
-# Create non-root user
-RUN addgroup -S buyza && adduser -S buyza -G buyza
-USER buyza
-WORKDIR /home/buyza
+# Copy the JAR file (built locally or via CI)
+COPY build/libs/*.jar app.jar
 
 EXPOSE 8080
 
-# Healthcheck (Render will use port 8080)
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
-  CMD curl -f http://localhost:8080/actuator/health || exit 1
+# Health check endpoint (make sure you have this in your Spring Boot app)
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
-ENTRYPOINT ["java","-Djava.security.egd=file:/dev/./urandom","-jar","/app/app.jar"]
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]
