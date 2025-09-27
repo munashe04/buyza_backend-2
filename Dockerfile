@@ -21,8 +21,10 @@ WORKDIR /app
 COPY --from=build /app/build/libs/*.jar app.jar
 
 # Use non-root user for better security
-RUN addgroup -S buyza && adduser -S buyza -G buyza -h /home/buyza
+# Create non-root user
+RUN addgroup -S buyza && adduser -S buyza -G buyza
 USER buyza
+WORKDIR /home/buyza
 
 EXPOSE 8080
 
