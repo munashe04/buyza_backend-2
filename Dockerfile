@@ -1,26 +1,33 @@
-FROM openjdk:17-jdk-alpine
-
+# Stage 1 - build
+FROM eclipse-temurin:17-jdk AS build
 WORKDIR /app
 
-# Copy Gradle wrapper files
-COPY gradle/ gradle/
+# Copy Gradle wrapper and build files
 COPY gradlew .
-COPY gradlew.bat .
-COPY build.gradle .
-COPY settings.gradle .
+COPY gradle gradle
+COPY build.gradle settings.gradle ./
+# Copy whole source
+COPY src src
 
 # Make gradlew executable
-RUN chmod +x ./gradlew
+RUN chmod +x gradlew
 
-# Download dependencies (cached layer)
-RUN ./gradlew dependencies --no-daemon
+# Build
+RUN ./gradlew bootJar -x test --no-daemon
 
-# Copy source code
-COPY src/ src/
+# Stage 2 - runtime
+FROM eclipse-temurin:17-jre
+WORKDIR /app
+COPY --from=build /app/build/libs/*.jar app.jar
 
-# Build the application
-RUN ./gradlew clean build -x test --no-daemon
+# Use non-root user for better security
+RUN addgroup -S buyza && adduser -S buyza -G buyza
+USER buyza
 
-# Run the application
 EXPOSE 8080
-CMD ["java", "-jar", "build/libs/Buyza-0.0.1-SNAPSHOT.jar"]
+
+# Healthcheck (Render will use port 8080)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
+  CMD curl -f http://localhost:8080/actuator/health || exit 1
+
+ENTRYPOINT ["java","-Djava.security.egd=file:/dev/./urandom","-jar","/app/app.jar"]
