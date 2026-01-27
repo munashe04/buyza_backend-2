@@ -53,7 +53,7 @@ public class WebhookController {
                 log.info("Webhook verified successfully.");
                 return ResponseEntity.ok(challenge);
             } else {
-                log.warn("Webhook verification failed. Provided token did not match.");
+                log.warn("Webhook verification failed. Provided token did not match.verifyToken : {}, token :{}" ,verifyToken, token);
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body("Verification failed");
             }
         }
