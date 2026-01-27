@@ -12,6 +12,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.util.ContentCachingRequestWrapper;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -33,7 +34,7 @@ public class WebhookController {
     @Value("${whatsapp.verify.token}")
     private String verifyToken;
 
-    @Value("${whatsapp.access-token:}")
+    @Value("${whatsapp.appSecret:}")
     private String appSecret;
 
     @Value("${whatsapp.signature.check:true}")
@@ -130,7 +131,7 @@ public class WebhookController {
     }
 
 
-    */
+
 
     @PostMapping
     public ResponseEntity<String> handleWebhook(
@@ -199,6 +200,76 @@ public class WebhookController {
             return ResponseEntity.ok("EVENT_RECEIVED");
         }
     }
+
+
+    */
+
+    @PostMapping("/webhook")
+    public ResponseEntity<String> handleWebhook(
+            HttpServletRequest request,
+            @RequestHeader(value = "X-Hub-Signature-256", required = false) String signature) {
+
+        byte[] rawBody = ((ContentCachingRequestWrapper) request)
+                .getContentAsByteArray();
+
+        if (rawBody == null || rawBody.length == 0) {
+            log.info("Meta test ping");
+            return ResponseEntity.ok("OK");
+        }
+
+        if (signature == null || !verifySignature(rawBody, signature)) {
+            log.error("🚨 INVALID SIGNATURE");
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid signature");
+        }
+
+        try {
+            JsonNode root = mapper.readTree(rawBody);
+
+            flowService.handleIncoming(root);
+
+            return ResponseEntity.ok("EVENT_RECEIVED");
+
+        } catch (Exception e) {
+            log.error("Webhook error", e);
+            return ResponseEntity.ok("EVENT_RECEIVED");
+        }
+    }
+
+
+    private boolean verifySignature(byte[] payload, String signatureHeader) {
+        try {
+            if (!signatureHeader.startsWith("sha256=")) return false;
+
+            String received = signatureHeader.substring(7);
+
+            Mac mac = Mac.getInstance("HmacSHA256");
+            SecretKeySpec key = new SecretKeySpec(
+                    appSecret.getBytes(StandardCharsets.UTF_8),
+                    "HmacSHA256"
+            );
+            mac.init(key);
+
+            byte[] expectedHash = mac.doFinal(payload);
+            String expected = Hex.encodeHexString(expectedHash);
+
+            boolean match = MessageDigest.isEqual(
+                    received.getBytes(StandardCharsets.UTF_8),
+                    expected.getBytes(StandardCharsets.UTF_8)
+            );
+
+            if (!match) {
+                log.error("Expected: {}", expected);
+                log.error("Received: {}", received);
+            }
+
+            return match;
+
+        } catch (Exception e) {
+            log.error("Signature error", e);
+            return false;
+        }
+    }
+
     // ============ MESSAGE ID EXTRACTION ============
     public static String extractMessageId(JsonNode root) {
         try {
