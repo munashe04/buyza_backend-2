@@ -75,6 +75,19 @@ public class WebhookController {
                 signature != null ? "present" : "MISSING",
                 requestBody.length());
 
+        // 🔴 CRITICAL FIX: Check if this is a TEST notification
+        if (isMetaTestNotification(requestBody)) {
+            log.info("✅ Meta test notification received - No signature expected");
+            return ResponseEntity.ok("TEST_OK");
+        }
+
+        // 🔴 CRITICAL FIX: Only validate signature for REAL messages
+        if (signature == null || signature.isEmpty()) {
+            log.error("🚨 REAL MESSAGE WITHOUT SIGNATURE - Rejecting");
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body("Missing signature");
+        }
+
         // 1. VALIDATE SIGNATURE (CRITICAL FOR PRODUCTION)
         if (signatureCheck) {
             if (!isValidSignature(requestBody, signature)) {
@@ -113,6 +126,56 @@ public class WebhookController {
             log.error("❌ Error processing webhook: {}", e.getMessage(), e);
             // STILL return 200 so Meta doesn't retry
             return ResponseEntity.ok("EVENT_RECEIVED");
+        }
+    }
+
+    private boolean isMetaTestNotification(String body) {
+        try {
+            if (body == null || body.isEmpty()) {
+                return true; // Empty body = test ping
+            }
+
+            // Parse JSON to check structure
+            JsonNode root = mapper.readTree(body);
+
+            // Test notifications often have no "entry" array
+            boolean hasEntries = root.has("entry") &&
+                    root.get("entry").isArray() &&
+                    root.get("entry").size() > 0;
+
+            // If it has object but no entries, it's a test
+            if (root.has("object") && !hasEntries) {
+                return true;
+            }
+
+            // Check for test user ID (Meta uses specific IDs for testing)
+            if (hasEntries) {
+                String from = extractFrom(root);
+                if ("1234567890123456".equals(from) ||
+                        from.startsWith("test_") ||
+                        "test".equals(from)) {
+                    return true;
+                }
+            }
+
+            return false;
+
+        } catch (Exception e) {
+            // If can't parse, might be test
+            log.warn("Could not parse as JSON, might be test: {}", e.getMessage());
+            return true;
+        }
+    }
+
+    // 🔴 ADD THIS HELPER:
+    private String extractFrom(JsonNode root) {
+        try {
+            return root.path("entry").get(0)
+                    .path("changes").get(0)
+                    .path("value").path("messages").get(0)
+                    .path("from").asText();
+        } catch (Exception e) {
+            return null;
         }
     }
 
