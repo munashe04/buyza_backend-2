@@ -2,3 +2,12 @@
 google:
   sheets:
     spreadsheet-id: 1VVFbHbGuSB-MNrRDKkuS6sCjSGABYT6BXNYcb6B5WEU
+
+
+
+async:
+  executor:
+    core-pool-size: 10
+    max-pool-size: 50
+    queue-capacity: 1000
+    thread-name-prefix: "webhook-"
