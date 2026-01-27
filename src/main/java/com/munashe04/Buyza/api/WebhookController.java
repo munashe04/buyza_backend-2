@@ -62,7 +62,7 @@ public class WebhookController {
     }
 
     // ============ MESSAGE PROCESSING ENDPOINT ============
-    @PostMapping("/webhook")
+   /* @PostMapping("/webhook")
     public ResponseEntity<String> handleWebhook(
             HttpServletRequest request,
             @RequestHeader(value = "X-Hub-Signature-256", required = false) String signature) {
@@ -129,6 +129,121 @@ public class WebhookController {
         }
     }
 
+
+    */
+
+    @PostMapping
+    public ResponseEntity<String> handleWebhook(
+            HttpServletRequest request,
+            @RequestHeader(value = "X-Hub-Signature-256", required = false) String signature) {
+
+        long startTime = System.currentTimeMillis();
+        String requestBody = readRequestBody(request);
+
+        // ============ 1. HANDLE EMPTY/TEST REQUESTS ============
+        if (requestBody == null || requestBody.trim().isEmpty()) {
+            log.info("📭 Meta test ping received");
+            return ResponseEntity.ok("OK");
+        }
+
+        log.info("📨 Webhook received - Length: {} chars", requestBody.length());
+
+        // ============ 2. DETECT REQUEST TYPE ============
+        try {
+            JsonNode root = mapper.readTree(requestBody);
+
+            // A. Check if it's a TEST notification (no messages array)
+            if (isTestNotification(root)) {
+                log.info("✅ Meta test notification - No signature required");
+                return ResponseEntity.ok("TEST_OK");
+            }
+
+            // B. REAL MESSAGE: Must have signature
+            if (signature == null || signature.isEmpty()) {
+                log.error("🚨 SECURITY ALERT: Real message without signature");
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body("Missing signature for real message");
+            }
+
+            // ============ 3. VALIDATE SIGNATURE (PRODUCTION) ============
+            boolean isValid = validateSignature(requestBody, signature);
+
+            if (!isValid) {
+                log.error("🚨 SECURITY ALERT: Invalid signature");
+                // Alert monitoring system
+                alertSecurityTeam("Invalid WhatsApp webhook signature");
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body("Invalid signature");
+            }
+
+            log.debug("✅ Signature validated successfully");
+
+            // ============ 4. PROCESS MESSAGE ============
+            String from = extractFrom(root);
+            String messageId = extractMessageId(root);
+            String messageType = extractMessageType(root);
+
+            log.info("📱 Message [{}] from {} - Type: {}", messageId, from, messageType);
+
+            // Process asynchronously (critical for <2s response)
+            flowService.handleIncoming(root);
+
+            long duration = System.currentTimeMillis() - startTime;
+            log.info("⚡ Processed in {}ms", duration);
+
+            return ResponseEntity.ok("EVENT_RECEIVED");
+
+        } catch (Exception e) {
+            log.error("❌ Error processing webhook: {}", e.getMessage(), e);
+            // Still return 200 to prevent retries
+            return ResponseEntity.ok("EVENT_RECEIVED");
+        }
+    }
+    // ============ MESSAGE ID EXTRACTION ============
+    public static String extractMessageId(JsonNode root) {
+        try {
+            // Path: entry[0].changes[0].value.messages[0].id
+            return root.path("entry").get(0)
+                    .path("changes").get(0)
+                    .path("value").path("messages").get(0)
+                    .path("id").asText();
+        } catch (Exception e) {
+            log.warn("Could not extract message ID: {}", e.getMessage());
+            return "unknown";
+        }
+    }
+
+    // ============ MESSAGE TYPE EXTRACTION ============
+    public static String extractMessageType(JsonNode root) {
+        try {
+            // Path: entry[0].changes[0].value.messages[0].type
+            return root.path("entry").get(0)
+                    .path("changes").get(0)
+                    .path("value").path("messages").get(0)
+                    .path("type").asText();
+        } catch (Exception e) {
+            log.warn("Could not extract message type: {}", e.getMessage());
+            return "unknown";
+        }
+    }
+
+    private boolean isTestNotification(JsonNode root) {
+        // Test notifications don't have actual messages
+        try {
+            boolean hasMessages = root.path("entry").get(0)
+                    .path("changes").get(0)
+                    .path("value").has("messages");
+            return !hasMessages;
+        } catch (Exception e) {
+            // If we can't find messages, assume it's a test
+            return true;
+        }
+    }
+    private void alertSecurityTeam(String message) {
+        // Integrate with your alerting system (PagerDuty, Slack, etc.)
+        log.error("SECURITY ALERT: {}", message);
+        // TODO: Send to monitoring system
+    }
     private boolean isMetaTestNotification(String body) {
         try {
             if (body == null || body.isEmpty()) {
@@ -167,6 +282,7 @@ public class WebhookController {
         }
     }
 
+
     // 🔴 ADD THIS HELPER:
     private String extractFrom(JsonNode root) {
         try {
@@ -190,6 +306,42 @@ public class WebhookController {
         } catch (IOException e) {
             throw new RuntimeException("Failed to read request body", e);
         }
+    }
+
+    // ============ SIGNATURE VALIDATION ============
+    private boolean validateSignature(String payload, String signatureHeader) {
+        if (signatureHeader == null || !signatureHeader.startsWith("sha256=")) {
+            return false;
+        }
+
+        try {
+            String receivedSignature = signatureHeader.substring(7);
+            String calculatedSignature = calculateHMAC(payload, appSecret);
+
+            // Constant-time comparison for security
+            return MessageDigest.isEqual(
+                    receivedSignature.getBytes(StandardCharsets.UTF_8),
+                    calculatedSignature.getBytes(StandardCharsets.UTF_8)
+            );
+
+        } catch (Exception e) {
+            log.error("Signature validation error: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    private String calculateHMAC(String data, String secret) throws Exception {
+        Mac mac = Mac.getInstance("HmacSHA256");
+        SecretKeySpec spec = new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256");
+        mac.init(spec);
+        byte[] hash = mac.doFinal(data.getBytes(StandardCharsets.UTF_8));
+
+        // Convert to hex
+        StringBuilder hex = new StringBuilder();
+        for (byte b : hash) {
+            hex.append(String.format("%02x", b));
+        }
+        return hex.toString();
     }
 
     private boolean isValidSignature(String payload, String signatureHeader) {
