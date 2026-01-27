@@ -43,7 +43,7 @@ public class WebhookController {
         this.flowService = flowService;
     }
 
-    @GetMapping
+    @GetMapping("/webhook")
     public ResponseEntity<String> verifyWebhook(
             @RequestParam(name = "hub.mode") String mode,
             @RequestParam(name = "hub.challenge") String challenge,
@@ -62,7 +62,7 @@ public class WebhookController {
     }
 
     // ============ MESSAGE PROCESSING ENDPOINT ============
-    @PostMapping
+    @PostMapping("/webhook")
     public ResponseEntity<String> handleWebhook(
             HttpServletRequest request,
             @RequestHeader(value = "X-Hub-Signature-256", required = false) String signature) {
