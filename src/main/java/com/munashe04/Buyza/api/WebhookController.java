@@ -23,7 +23,7 @@ import java.util.Scanner;
 
 
 @RestController
-@RequestMapping("/chatbot")
+@RequestMapping("/chatbot/webhook")
 
 public class WebhookController {
 
@@ -44,23 +44,18 @@ public class WebhookController {
         this.flowService = flowService;
     }
 
-    @GetMapping("/webhook")
-    public ResponseEntity<String> verifyWebhook(
-            @RequestParam(name = "hub.mode") String mode,
-            @RequestParam(name = "hub.challenge") String challenge,
-            @RequestParam(name = "hub.verify_token") String token) {
+        @GetMapping
+        public ResponseEntity<String> verifyWebhook(
+                @RequestParam(name = "hub.mode", required = false) String mode,
+                @RequestParam(name = "hub.verify_token", required = false) String token,
+                @RequestParam(name = "hub.challenge", required = false) String challenge) {
 
-        log.info("Webhook verification - Mode: {}, Token present: {}",
-                mode, token != null);
+            if ("subscribe".equals(mode) && verifyToken.equals(token)) {
+                return ResponseEntity.ok(challenge);
+            }
 
-        if ("subscribe".equals(mode) && verifyToken.equals(token)) {
-            log.info("✅ Webhook verified successfully");
-            return ResponseEntity.ok(challenge);
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body("Verification failed");
         }
-
-        log.warn("❌ Webhook verification failed");
-        return ResponseEntity.status(HttpStatus.FORBIDDEN).body("Verification failed");
-    }
 
     // ============ MESSAGE PROCESSING ENDPOINT ============
    /* @PostMapping("/webhook")
@@ -204,7 +199,7 @@ public class WebhookController {
 
     */
 
-    @PostMapping("/webhook")
+    @PostMapping
     public ResponseEntity<String> handleWebhook(
             HttpServletRequest request,
             @RequestHeader(value = "X-Hub-Signature-256", required = false) String signature) {
