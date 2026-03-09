@@ -66,7 +66,7 @@ public class WebhookController {
             return ResponseEntity.ok("OK");
         }
 
-        // LOG EVERYTHING FIRST
+        // LOG EVERYTHING
         log.info("📨 Real webhook received - body length: {}, signature: {}",
                 body.length(), signature != null ? "PRESENT" : "MISSING");
 
