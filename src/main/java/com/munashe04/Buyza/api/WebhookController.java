@@ -199,7 +199,6 @@ public class WebhookController {
 
     */
 
-    @PostMapping
     public ResponseEntity<String> handleWebhook(
             @RequestBody String body,
             @RequestHeader(value = "X-Hub-Signature-256", required = false) String signature) {
@@ -209,11 +208,16 @@ public class WebhookController {
             return ResponseEntity.ok("OK");
         }
 
+        // LOG EVERYTHING FIRST
+        log.info("📨 Real webhook received - body length: {}, signature: {}",
+                body.length(), signature != null ? "PRESENT" : "MISSING");
+
         byte[] rawBody = body.getBytes(StandardCharsets.UTF_8);
 
         if (signature == null || !verifySignature(rawBody, signature)) {
-            log.error("🚨 INVALID SIGNATURE");
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid signature");
+            log.error("🚨 INVALID SIGNATURE - sig header: {}", signature);
+            // TEMPORARILY return 200 to prevent Meta retries while debugging
+            return ResponseEntity.ok("EVENT_RECEIVED");
         }
 
         try {
