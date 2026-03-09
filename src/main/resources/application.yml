@@ -7,3 +7,8 @@ whatsapp:
   phone:
     number:
       id: ${WHATSAPP_PHONE_NUMBER_ID:}
+
+
+google:
+  sheet:
+      id: ${GOOGLE_SHEETS_ID:}
