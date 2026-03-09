@@ -1,0 +1,9 @@
+whatsapp:
+  verify:
+    token: ${WHATSAPP_VERIFY_TOKEN:}
+  appSecret: ${WHATSAPP_APP_SECRET:}
+  access:
+    token: ${WHATSAPP_ACCESS_TOKEN:}
+  phone:
+    number:
+      id: ${WHATSAPP_PHONE_NUMBER_ID:}
