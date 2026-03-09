@@ -10,5 +10,5 @@ whatsapp:
 
 
 google:
-  sheet:
-      id: ${GOOGLE_SHEETS_ID:}
+  sheets:
+    spreadsheet-id: ${GOOGLE_SHEETS_ID:}
