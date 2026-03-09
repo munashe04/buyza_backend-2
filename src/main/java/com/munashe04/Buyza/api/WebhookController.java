@@ -201,16 +201,15 @@ public class WebhookController {
 
     @PostMapping
     public ResponseEntity<String> handleWebhook(
-            HttpServletRequest request,
+            @RequestBody String body,
             @RequestHeader(value = "X-Hub-Signature-256", required = false) String signature) {
 
-        byte[] rawBody = ((ContentCachingRequestWrapper) request)
-                .getContentAsByteArray();
-
-        if (rawBody == null || rawBody.length == 0) {
+        if (body == null || body.isEmpty()) {
             log.info("Meta test ping");
             return ResponseEntity.ok("OK");
         }
+
+        byte[] rawBody = body.getBytes(StandardCharsets.UTF_8);
 
         if (signature == null || !verifySignature(rawBody, signature)) {
             log.error("🚨 INVALID SIGNATURE");
@@ -218,7 +217,9 @@ public class WebhookController {
         }
 
         try {
-            JsonNode root = mapper.readTree(rawBody);
+            JsonNode root = mapper.readTree(body);
+
+            log.info("Webhook payload: {}", body);
 
             flowService.handleIncoming(root);
 
