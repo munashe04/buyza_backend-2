@@ -24,7 +24,6 @@ import java.util.Scanner;
 
 @RestController
 @RequestMapping("/chatbot/webhook")
-
 public class WebhookController {
 
     private static final Logger log = LoggerFactory.getLogger(WebhookController.class);
@@ -57,7 +56,7 @@ public class WebhookController {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body("Verification failed");
         }
 
-
+    @PostMapping
     public ResponseEntity<String> handleWebhook(
             @RequestBody String body,
             @RequestHeader(value = "X-Hub-Signature-256", required = false) String signature) {
