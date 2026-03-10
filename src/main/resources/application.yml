@@ -8,7 +8,19 @@ whatsapp:
     number:
       id: ${WHATSAPP_PHONE_NUMBER_ID:}
 
+  whatsapp:
+    signature:
+      check: false
+
 
 google:
   sheets:
     spreadsheet-id: ${GOOGLE_SHEETS_ID:}
+
+
+
+
+
+
+
+
