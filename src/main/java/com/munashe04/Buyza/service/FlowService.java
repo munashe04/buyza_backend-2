@@ -20,6 +20,38 @@ public class FlowService {
     public void handleIncoming(JsonNode root) {
         try {
             JsonNode entry = root.path("entry");
+            if (entry.isMissingNode() || !entry.isArray() || entry.size() == 0) return;
+
+            JsonNode value = entry.get(0).path("changes").get(0).path("value");
+
+            // Filter out status updates — only process actual messages
+            if (value.has("statuses")) {
+                log.debug("Ignoring status update webhook");
+                return;
+            }
+
+            JsonNode messages = value.path("messages");
+            if (messages.isMissingNode() || !messages.isArray() || messages.size() == 0) return;
+
+            JsonNode msg = messages.get(0);
+            String from      = msg.path("from").asText();
+            String messageId = msg.path("id").asText();
+            String type      = msg.path("type").asText("text");
+            String text      = extractText(msg);
+
+            log.info("Received message from {} -> {}", from, text);
+            wa.handleIncomingMessage(from, messageId, type, text);
+
+        } catch (Exception e) {
+            log.error("handleIncoming error", e);
+        }
+    }
+
+
+
+    /*public void handleIncoming(JsonNode root) {
+        try {
+            JsonNode entry = root.path("entry");
             if (entry.isMissingNode() || !entry.isArray() || entry.size() == 0) {
                 log.debug("No entry array found in webhook payload");
                 return;
@@ -58,7 +90,7 @@ public class FlowService {
         } catch (Exception e) {
             log.error("handleIncoming error", e);
         }
-    }
+    }*/
 
     private String extractText(JsonNode messageNode) {
         if (messageNode.has("text") && messageNode.path("text").has("body")) {
