@@ -4,11 +4,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -17,25 +20,34 @@ import java.util.concurrent.ConcurrentHashMap;
 public class WhatsAppService {
 
     private static final Logger log = LoggerFactory.getLogger(WhatsAppService.class);
-    private static final long SESSION_TIMEOUT_SECONDS = 3600; // 1 hour
 
+    // ============ CONSTANTS ============
+    private static final long SESSION_TIMEOUT_SECONDS    = 3600; // 1 hour
+    private static final long MESSAGE_DEDUP_WINDOW_SECS  = 300;  // 5 minutes
+    private static final int  MAX_MESSAGES_PER_MINUTE    = 10;
+    private static final int  MAX_LOG_MESSAGE_LENGTH     = 500;
+
+    // ============ SESSION STATE ============
     public enum State {
         NONE,
         AWAITING_ONLINE_ORDER_DETAILS,
         AWAITING_ASSISTED_ORDER_DETAILS,
         AWAITING_QUOTE_CONFIRMATION,
-        AWAITING_PAYMENT
+        AWAITING_PAYMENT,
+        TALKING_TO_AGENT
     }
 
-    // Session entry with timestamp for timeout
     private record Session(State state, Instant updatedAt) {}
 
-    private final Map<String, Session> sessions = new ConcurrentHashMap<>();
-    private final Map<String, String> processedMessages = new ConcurrentHashMap<>();
+    // ============ IN-MEMORY STORES ============
+    private final Map<String, Session>       sessions         = new ConcurrentHashMap<>();
+    private final Map<String, Long>          processedMessages = new ConcurrentHashMap<>();
+    private final Map<String, List<Long>>    rateLimitMap     = new ConcurrentHashMap<>();
 
-    private final RestTemplate restTemplate;
+    // ============ DEPENDENCIES ============
+    private final RestTemplate       restTemplate;
     private final GoogleSheetsService sheetsService;
-    private final FaqService faqService;
+    private final FaqService          faqService;
 
     @Value("${whatsapp.phone-number-id}")
     private String phoneNumberId;
@@ -43,49 +55,58 @@ public class WhatsAppService {
     @Value("${whatsapp.token}")
     private String accessToken;
 
+    @Value("${slack.webhook.url:}")
+    private String slackWebhookUrl;
+
     public WhatsAppService(RestTemplate restTemplate,
                            GoogleSheetsService sheetsService,
                            FaqService faqService) {
-        this.restTemplate = restTemplate;
+        this.restTemplate  = restTemplate;
         this.sheetsService = sheetsService;
-        this.faqService = faqService;
+        this.faqService    = faqService;
     }
 
-    // ============ ENTRY POINT ============
+    // ============ MAIN ENTRY POINT ============
 
     public void handleIncomingMessage(String from, String messageId, String type, String rawText) {
 
-        // 1. Deduplicate — ignore if already processed
-        if (processedMessages.containsKey(messageId)) {
+        // 1. Deduplicate
+        if (isDuplicate(messageId)) {
             log.info("Duplicate message {} from {} — ignoring", messageId, from);
             return;
         }
-        processedMessages.put(messageId, from);
 
-        // 2. Handle non-text message types
+        // 2. Rate limit
+        if (isRateLimited(from)) {
+            log.warn("Rate limit hit for {} — ignoring message", from);
+            return;
+        }
+
+        // 3. Handle non-text messages
         if (!type.equals("text")) {
             handleNonTextMessage(from, type);
             return;
         }
 
-        String text = rawText == null ? "" : rawText.trim();
-        State currentState = getState(from);
+        String text         = rawText == null ? "" : rawText.trim();
+        State  currentState = getState(from);
 
         log.info("User {} | State: {} | Message: {}", from, currentState, text);
 
-        // 3. Always allow menu reset
+        // 4. Always allow menu reset
         if (text.equalsIgnoreCase("menu") || text.equals("0")) {
             setState(from, State.NONE);
             sendMainMenu(from);
             return;
         }
 
-        // 4. Route based on state
+        // 5. Route based on state
         switch (currentState) {
-            case AWAITING_ONLINE_ORDER_DETAILS  -> handleOnlineOrderDetails(from, text);
+            case AWAITING_ONLINE_ORDER_DETAILS   -> handleOnlineOrderDetails(from, text);
             case AWAITING_ASSISTED_ORDER_DETAILS -> handleAssistedOrderDetails(from, text);
             case AWAITING_QUOTE_CONFIRMATION     -> handleQuoteConfirmation(from, text);
             case AWAITING_PAYMENT                -> handlePaymentConfirmation(from, text);
+            case TALKING_TO_AGENT                -> handleTalkingToAgent(from, text);
             default                              -> handleMenuSelection(from, text);
         }
     }
@@ -95,15 +116,18 @@ public class WhatsAppService {
     private void handleNonTextMessage(String from, String type) {
         String response = switch (type) {
             case "image", "document", "video" ->
-                    "📎 Thanks for sending that! Unfortunately our bot can't process files yet.\n\nReply *4* to talk to an agent who can help, or reply *Menu* to see options.";
+                    "📎 Thanks for sending that! Unfortunately our bot can't process files yet.\n\n" +
+                            "Reply *4* to talk to an agent who can help, or reply *Menu* to see options.";
             case "audio", "voice" ->
-                    "🎙️ Voice notes aren't supported yet.\n\nPlease type your message or reply *Menu* to see options.";
+                    "🎙️ Voice notes aren't supported yet.\n\n" +
+                            "Please type your message or reply *Menu* to see options.";
             case "sticker", "reaction" ->
                     "😊 Thanks! Reply *Menu* to see what we can help you with.";
             case "location" ->
-                    "📍 Thanks for sharing your location! Reply *3* for delivery info or *Menu* for options.";
+                    "📍 Thanks for sharing your location!\n\n" +
+                            "Reply *3* for delivery info or *Menu* for all options.";
             default ->
-                    "Sorry, I can't process that type of message. Reply *Menu* to see options.";
+                    "Sorry, I can't process that type of message.\n\nReply *Menu* to see options.";
         };
         sendMessageWithRetry(from, response);
     }
@@ -133,12 +157,14 @@ public class WhatsAppService {
                 safeLog("Delivery Info", from, text, "-", "Info Provided");
             }
             case "4" -> {
+                setState(from, State.TALKING_TO_AGENT);
                 sendTalkToAgent(from);
                 safeLog("Agent Request", from, text, "-", "Escalated");
             }
             default -> {
                 if (faqService.isFaqQuestion(text)) {
                     sendMessageWithRetry(from, faqService.answer(text));
+                    safeLog("FAQ", from, text, "-", "FAQ Answered");
                 } else {
                     sendFallback(from);
                 }
@@ -223,19 +249,25 @@ public class WhatsAppService {
         }
         if (text.toLowerCase().startsWith("paid")) {
             sendMessageWithRetry(from, """
-                    💰 Thank you! We've noted your payment.
+                    💰 Thank you! We've noted your payment. 🎉
 
-                    An agent will confirm and process your order shortly. 🎉
+                    An agent will confirm and process your order shortly.
 
                     Reply *Menu* to start a new order.
                     """);
             setState(from, State.NONE);
             safeLog("Payment Confirmed", from, text, "-", "Payment Noted");
+
         } else if (text.equalsIgnoreCase("priority")) {
             sendMessageWithRetry(from, """
-                    🚨 Priority flag noted! An agent will attend to you urgently.
+                    🚨 *Priority request noted!*
+
+                    An agent has been alerted and will respond urgently.
+                    ⏰ Expected response: within 30 minutes.
                     """);
-            safeLog("Priority Request", from, text, "-", "Priority");
+            safeLog("Priority Request", from, text, "-", "Priority Escalated");
+            alertAgentTeam(from, "PAYMENT STAGE");
+
         } else {
             sendMessageWithRetry(from, """
                     ⏳ We're waiting for your payment confirmation.
@@ -246,6 +278,35 @@ public class WhatsAppService {
                     Or reply *Menu* to cancel and start over.
                     """);
         }
+    }
+
+    private void handleTalkingToAgent(String from, String text) {
+        if (isBackCommand(text)) {
+            setState(from, State.NONE);
+            sendMainMenu(from);
+            return;
+        }
+        if (text.equalsIgnoreCase("priority")) {
+            sendMessageWithRetry(from, """
+                    🚨 *Priority request noted!*
+
+                    An agent has been alerted and will respond to you urgently.
+                    ⏰ Expected response: within 30 minutes.
+
+                    Reply *Menu* to go back to the main menu.
+                    """);
+            safeLog("Priority Request", from, text, "-", "Priority Escalated");
+            alertAgentTeam(from, "AGENT CHAT");
+            return;
+        }
+        // Forward any other message — acknowledge receipt
+        sendMessageWithRetry(from, """
+                ✅ Message received — an agent will respond shortly.
+
+                Reply *Priority* for urgent help.
+                Reply *Menu* to go back.
+                """);
+        safeLog("Agent Message", from, text, "-", "Awaiting Agent");
     }
 
     // ============ MESSAGE TEMPLATES ============
@@ -278,7 +339,7 @@ public class WhatsAppService {
                 Cart link: https://www.takealot.com/...
                 Total: R850
 
-                (Reply *Menu* to go back)
+                (Reply *Back* to go back or *Menu* to start over)
                 """);
     }
 
@@ -294,7 +355,7 @@ public class WhatsAppService {
                 Example:
                 "I need a replacement gearbox for a 2019 Mercedes-Benz GLC, budget R8 000"
 
-                (Reply *Menu* to go back)
+                (Reply *Back* to go back or *Menu* to start over)
                 """);
     }
 
@@ -319,7 +380,7 @@ public class WhatsAppService {
                 ⏰ Typical response: within a few hours.
 
                 Reply *Priority* if you need urgent assistance.
-                Reply *Menu* to go back.
+                Reply *Back* to go back or *Menu* for all options.
                 """);
     }
 
@@ -343,9 +404,8 @@ public class WhatsAppService {
         Session session = sessions.get(from);
         if (session == null) return State.NONE;
 
-        // Check for timeout
-        long secondsElapsed = Instant.now().getEpochSecond() - session.updatedAt().getEpochSecond();
-        if (secondsElapsed > SESSION_TIMEOUT_SECONDS) {
+        long elapsed = Instant.now().getEpochSecond() - session.updatedAt().getEpochSecond();
+        if (elapsed > SESSION_TIMEOUT_SECONDS) {
             log.info("Session expired for {}", from);
             sessions.remove(from);
             return State.NONE;
@@ -357,14 +417,85 @@ public class WhatsAppService {
         sessions.put(from, new Session(state, Instant.now()));
     }
 
+    // ============ SCHEDULED CLEANUP ============
+
+    @Scheduled(fixedRate = 3600000) // every hour
+    public void cleanupExpiredSessions() {
+        long now    = Instant.now().getEpochSecond();
+        int before  = sessions.size();
+        sessions.entrySet().removeIf(e ->
+                now - e.getValue().updatedAt().getEpochSecond() > SESSION_TIMEOUT_SECONDS);
+        log.info("Session cleanup: removed {} expired sessions", before - sessions.size());
+    }
+
+    @Scheduled(fixedRate = 300000) // every 5 minutes
+    public void cleanupProcessedMessages() {
+        long now   = Instant.now().getEpochSecond();
+        int before = processedMessages.size();
+        processedMessages.entrySet().removeIf(e ->
+                now - e.getValue() > MESSAGE_DEDUP_WINDOW_SECS);
+        log.info("Message dedup cleanup: removed {} entries", before - processedMessages.size());
+    }
+
+    @Scheduled(fixedRate = 60000) // every minute
+    public void cleanupRateLimitMap() {
+        long now = Instant.now().getEpochSecond();
+        rateLimitMap.forEach((key, timestamps) ->
+                timestamps.removeIf(t -> now - t > 60));
+        rateLimitMap.entrySet().removeIf(e -> e.getValue().isEmpty());
+    }
+
+    // ============ DEDUPLICATION ============
+
+    private boolean isDuplicate(String messageId) {
+        long now = Instant.now().getEpochSecond();
+        if (processedMessages.containsKey(messageId)) return true;
+        processedMessages.put(messageId, now);
+        return false;
+    }
+
+    // ============ RATE LIMITING ============
+
+    private boolean isRateLimited(String from) {
+        long now = Instant.now().getEpochSecond();
+        rateLimitMap.putIfAbsent(from, new ArrayList<>());
+        List<Long> timestamps = rateLimitMap.get(from);
+        timestamps.removeIf(t -> now - t > 60);
+        if (timestamps.size() >= MAX_MESSAGES_PER_MINUTE) return true;
+        timestamps.add(now);
+        return false;
+    }
+
+    // ============ AGENT ALERT ============
+
+    private void alertAgentTeam(String from, String context) {
+        log.warn("🚨 PRIORITY REQUEST from +{} at stage: {}", from, context);
+        if (slackWebhookUrl == null || slackWebhookUrl.isBlank()) return;
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            Map<String, String> payload = Map.of(
+                    "text", String.format(
+                            "🚨 *PRIORITY REQUEST*\nFrom: +%s\nStage: %s\nRespond urgently!", from, context)
+            );
+            restTemplate.postForEntity(slackWebhookUrl,
+                    new HttpEntity<>(payload, headers), String.class);
+            log.info("Slack alert sent for {}", from);
+        } catch (Exception e) {
+            log.error("Failed to send Slack alert: {}", e.getMessage());
+        }
+    }
+
     // ============ HELPERS ============
 
     private boolean isGreeting(String text) {
         if (text == null) return false;
         String lower = text.trim().toLowerCase();
-        return lower.equals("hi") || lower.equals("hello") || lower.equals("hey") ||
-                lower.equals("start") || lower.equals("hie") || lower.equals("howzit") ||
-                lower.equals("good morning") || lower.equals("good afternoon");
+        return lower.equals("hi")            || lower.equals("hello") ||
+                lower.equals("hey")           || lower.equals("start") ||
+                lower.equals("hie")           || lower.equals("howzit") ||
+                lower.equals("good morning")  || lower.equals("good afternoon") ||
+                lower.equals("good evening");
     }
 
     private boolean isBackCommand(String text) {
@@ -375,9 +506,13 @@ public class WhatsAppService {
 
     private void safeLog(String type, String phone, String message, String quote, String status) {
         try {
-            sheetsService.saveInteraction(type, phone, message, quote, status);
+            String truncated = message != null && message.length() > MAX_LOG_MESSAGE_LENGTH
+                    ? message.substring(0, MAX_LOG_MESSAGE_LENGTH - 3) + "..."
+                    : message;
+            sheetsService.saveInteraction(type, phone, truncated, quote, status);
         } catch (Exception e) {
-            log.warn("Failed to save to sheets: {}", e.getMessage());
+            log.warn("⚠️ Failed to save to sheets: {} | type={}, phone={}",
+                    e.getMessage(), type, phone);
         }
     }
 
