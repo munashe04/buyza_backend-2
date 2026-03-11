@@ -9,7 +9,7 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 @EnableScheduling
-@EnableJpaRepositories(basePackages = "com.munashe04.Buyza.repository")
+//@EnableJpaRepositories(basePackages = "com.munashe04.Buyza.repository")
 @SpringBootApplication(exclude = {
 		DataSourceAutoConfiguration.class,
 		DataSourceTransactionManagerAutoConfiguration.class,
