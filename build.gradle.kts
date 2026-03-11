@@ -30,6 +30,10 @@ dependencies {
 	implementation ("commons-codec:commons-codec:1.16.0")
 	implementation ("com.google.apis:google-api-services-sheets:v4-rev20240402-2.0.0")
 	implementation("com.google.auth:google-auth-library-oauth2-http:1.38.0")
+	implementation ("org.springframework.boot:spring-boot-starter-data-jpa")
+	runtimeOnly ("org.postgresql:postgresql")
+
+
 
 	//implementation ("com.google.api-client:google-api-client:2.7.0")
 	implementation ("com.google.oauth-client:google-oauth-client-jetty:1.34.1")
