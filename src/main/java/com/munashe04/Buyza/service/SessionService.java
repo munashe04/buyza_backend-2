@@ -8,38 +8,76 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class SessionService {
 
     private static final Logger log = LoggerFactory.getLogger(SessionService.class);
-    private static final long SESSION_TIMEOUT_SECONDS = 3600; // 1 hour
+    private static final long SESSION_TIMEOUT_SECONDS = 3600;
 
-    private final UserSessionRepository repo;
+    // Fallback in-memory store if DB is unavailable
+    private final ConcurrentHashMap<String, UserSession> memoryStore = new ConcurrentHashMap<>();
 
-    public SessionService(UserSessionRepository repo) {
+    private final Optional<UserSessionRepository> repo;
+    private boolean dbAvailable = false;
+
+    // Constructor — repo is optional
+    public SessionService(Optional<UserSessionRepository> repo) {
         this.repo = repo;
+        this.dbAvailable = repo.isPresent();
+        if (dbAvailable) {
+            log.info("✅ SessionService using PostgreSQL (Supabase)");
+        } else {
+            log.warn("⚠️ SessionService using in-memory store — sessions will not persist across restarts");
+        }
     }
 
     public WhatsAppService.State getState(String phoneNumber) {
-        return repo.findById(phoneNumber)
-                .filter(s -> !isExpired(s))
-                .map(s -> {
-                    try {
-                        return WhatsAppService.State.valueOf(s.getState());
-                    } catch (Exception e) {
-                        return WhatsAppService.State.NONE;
-                    }
-                })
-                .orElse(WhatsAppService.State.NONE);
+        try {
+            if (dbAvailable) {
+                return repo.get().findById(phoneNumber)
+                        .filter(s -> !isExpired(s))
+                        .map(s -> {
+                            try {
+                                return WhatsAppService.State.valueOf(s.getState());
+                            } catch (Exception e) {
+                                return WhatsAppService.State.NONE;
+                            }
+                        })
+                        .orElse(WhatsAppService.State.NONE);
+            }
+        } catch (Exception e) {
+            log.warn("DB read failed, falling back to memory: {}", e.getMessage());
+            dbAvailable = false;
+        }
+
+        // Fallback to memory
+        UserSession session = memoryStore.get(phoneNumber);
+        if (session == null || isExpired(session)) return WhatsAppService.State.NONE;
+        try {
+            return WhatsAppService.State.valueOf(session.getState());
+        } catch (Exception e) {
+            return WhatsAppService.State.NONE;
+        }
     }
 
     public void setState(String phoneNumber, WhatsAppService.State state) {
-        UserSession session = repo.findById(phoneNumber)
-                .orElse(new UserSession(phoneNumber, state.name(), Instant.now()));
-        session.setState(state.name());
-        session.setUpdatedAt(Instant.now());
-        repo.save(session);
+        UserSession session = new UserSession(phoneNumber, state.name(), Instant.now());
+
+        try {
+            if (dbAvailable) {
+                repo.get().save(session);
+                return;
+            }
+        } catch (Exception e) {
+            log.warn("DB write failed, falling back to memory: {}", e.getMessage());
+            dbAvailable = false;
+        }
+
+        // Fallback to memory
+        memoryStore.put(phoneNumber, session);
     }
 
     private boolean isExpired(UserSession session) {
@@ -47,13 +85,22 @@ public class SessionService {
         return elapsed > SESSION_TIMEOUT_SECONDS;
     }
 
-    @Scheduled(fixedRate = 3600000) // every hour
+    @Scheduled(fixedRate = 3600000)
     public void cleanupExpiredSessions() {
-        long now    = Instant.now().getEpochSecond();
-        int  before = (int) repo.count();
-        repo.findAll().stream()
-            .filter(this::isExpired)
-            .forEach(repo::delete);
-        log.info("Session cleanup done. Before: {}, After: {}", before, repo.count());
+        // Cleanup memory store
+        int before = memoryStore.size();
+        memoryStore.entrySet().removeIf(e -> isExpired(e.getValue()));
+        log.info("Memory session cleanup: removed {} expired sessions", before - memoryStore.size());
+
+        // Cleanup DB store
+        if (dbAvailable) {
+            try {
+                repo.get().findAll().stream()
+                        .filter(this::isExpired)
+                        .forEach(repo.get()::delete);
+            } catch (Exception e) {
+                log.warn("DB cleanup failed: {}", e.getMessage());
+            }
+        }
     }
 }
