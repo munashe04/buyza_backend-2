@@ -22,10 +22,9 @@ public class WhatsAppService {
     private static final Logger log = LoggerFactory.getLogger(WhatsAppService.class);
 
     // ============ CONSTANTS ============
-    private static final long SESSION_TIMEOUT_SECONDS    = 3600; // 1 hour
-    private static final long MESSAGE_DEDUP_WINDOW_SECS  = 300;  // 5 minutes
-    private static final int  MAX_MESSAGES_PER_MINUTE    = 10;
-    private static final int  MAX_LOG_MESSAGE_LENGTH     = 500;
+    private static final long MESSAGE_DEDUP_WINDOW_SECS = 300;  // 5 minutes
+    private static final int  MAX_MESSAGES_PER_MINUTE   = 10;
+    private static final int  MAX_LOG_MESSAGE_LENGTH    = 500;
 
     // ============ SESSION STATE ============
     public enum State {
@@ -37,17 +36,15 @@ public class WhatsAppService {
         TALKING_TO_AGENT
     }
 
-    private record Session(State state, Instant updatedAt) {}
-
-    // ============ IN-MEMORY STORES ============
-    private final Map<String, Session>       sessions         = new ConcurrentHashMap<>();
-    private final Map<String, Long>          processedMessages = new ConcurrentHashMap<>();
-    private final Map<String, List<Long>>    rateLimitMap     = new ConcurrentHashMap<>();
+    // ============ IN-MEMORY STORES (non-session) ============
+    private final Map<String, Long>       processedMessages = new ConcurrentHashMap<>();
+    private final Map<String, List<Long>> rateLimitMap      = new ConcurrentHashMap<>();
 
     // ============ DEPENDENCIES ============
-    private final RestTemplate       restTemplate;
+    private final RestTemplate        restTemplate;
     private final GoogleSheetsService sheetsService;
     private final FaqService          faqService;
+    private final SessionService      sessionService;
 
     @Value("${whatsapp.phone-number-id}")
     private String phoneNumberId;
@@ -60,10 +57,12 @@ public class WhatsAppService {
 
     public WhatsAppService(RestTemplate restTemplate,
                            GoogleSheetsService sheetsService,
-                           FaqService faqService) {
-        this.restTemplate  = restTemplate;
-        this.sheetsService = sheetsService;
-        this.faqService    = faqService;
+                           FaqService faqService,
+                           SessionService sessionService) {
+        this.restTemplate   = restTemplate;
+        this.sheetsService  = sheetsService;
+        this.faqService     = faqService;
+        this.sessionService = sessionService;
     }
 
     // ============ MAIN ENTRY POINT ============
@@ -89,13 +88,13 @@ public class WhatsAppService {
         }
 
         String text         = rawText == null ? "" : rawText.trim();
-        State  currentState = getState(from);
+        State  currentState = sessionService.getState(from);
 
         log.info("User {} | State: {} | Message: {}", from, currentState, text);
 
         // 4. Always allow menu reset
         if (text.equalsIgnoreCase("menu") || text.equals("0")) {
-            setState(from, State.NONE);
+            sessionService.setState(from, State.NONE);
             sendMainMenu(from);
             return;
         }
@@ -143,12 +142,12 @@ public class WhatsAppService {
 
         switch (text) {
             case "1" -> {
-                setState(from, State.AWAITING_ONLINE_ORDER_DETAILS);
+                sessionService.setState(from, State.AWAITING_ONLINE_ORDER_DETAILS);
                 sendOnlineOrderPrompt(from);
                 safeLog("Online Order Start", from, text, "-", "New Order");
             }
             case "2" -> {
-                setState(from, State.AWAITING_ASSISTED_ORDER_DETAILS);
+                sessionService.setState(from, State.AWAITING_ASSISTED_ORDER_DETAILS);
                 sendAssistedOrderPrompt(from);
                 safeLog("Assisted Order Start", from, text, "-", "New Order");
             }
@@ -157,7 +156,7 @@ public class WhatsAppService {
                 safeLog("Delivery Info", from, text, "-", "Info Provided");
             }
             case "4" -> {
-                setState(from, State.TALKING_TO_AGENT);
+                sessionService.setState(from, State.TALKING_TO_AGENT);
                 sendTalkToAgent(from);
                 safeLog("Agent Request", from, text, "-", "Escalated");
             }
@@ -174,7 +173,7 @@ public class WhatsAppService {
 
     private void handleOnlineOrderDetails(String from, String text) {
         if (isBackCommand(text)) {
-            setState(from, State.NONE);
+            sessionService.setState(from, State.NONE);
             sendMainMenu(from);
             return;
         }
@@ -187,13 +186,13 @@ public class WhatsAppService {
                 Reply *Yes* to confirm or *No* to cancel.
                 (Reply *Menu* anytime to start over)
                 """);
-        setState(from, State.AWAITING_QUOTE_CONFIRMATION);
+        sessionService.setState(from, State.AWAITING_QUOTE_CONFIRMATION);
         safeLog("Online Order Details", from, text, "-", "Details Provided");
     }
 
     private void handleAssistedOrderDetails(String from, String text) {
         if (isBackCommand(text)) {
-            setState(from, State.NONE);
+            sessionService.setState(from, State.NONE);
             sendMainMenu(from);
             return;
         }
@@ -206,13 +205,13 @@ public class WhatsAppService {
                 Reply *Yes* to confirm or *No* to cancel.
                 (Reply *Menu* anytime to start over)
                 """);
-        setState(from, State.AWAITING_QUOTE_CONFIRMATION);
+        sessionService.setState(from, State.AWAITING_QUOTE_CONFIRMATION);
         safeLog("Assisted Order Details", from, text, "-", "Details Provided");
     }
 
     private void handleQuoteConfirmation(String from, String text) {
         if (isBackCommand(text)) {
-            setState(from, State.NONE);
+            sessionService.setState(from, State.NONE);
             sendMainMenu(from);
             return;
         }
@@ -223,7 +222,7 @@ public class WhatsAppService {
                     Once you receive it, complete payment and reply *Paid* followed by your reference number.
                     Example: "Paid REF123456"
                     """);
-            setState(from, State.AWAITING_PAYMENT);
+            sessionService.setState(from, State.AWAITING_PAYMENT);
             safeLog("Quote Accepted", from, text, "-", "Awaiting Payment");
 
         } else if (text.equalsIgnoreCase("no") || text.equalsIgnoreCase("n")) {
@@ -232,7 +231,7 @@ public class WhatsAppService {
 
                     Reply *Menu* to start a new order anytime.
                     """);
-            setState(from, State.NONE);
+            sessionService.setState(from, State.NONE);
             safeLog("Quote Rejected", from, text, "-", "Cancelled");
 
         } else {
@@ -243,7 +242,7 @@ public class WhatsAppService {
 
     private void handlePaymentConfirmation(String from, String text) {
         if (isBackCommand(text)) {
-            setState(from, State.NONE);
+            sessionService.setState(from, State.NONE);
             sendMainMenu(from);
             return;
         }
@@ -255,7 +254,7 @@ public class WhatsAppService {
 
                     Reply *Menu* to start a new order.
                     """);
-            setState(from, State.NONE);
+            sessionService.setState(from, State.NONE);
             safeLog("Payment Confirmed", from, text, "-", "Payment Noted");
 
         } else if (text.equalsIgnoreCase("priority")) {
@@ -282,7 +281,7 @@ public class WhatsAppService {
 
     private void handleTalkingToAgent(String from, String text) {
         if (isBackCommand(text)) {
-            setState(from, State.NONE);
+            sessionService.setState(from, State.NONE);
             sendMainMenu(from);
             return;
         }
@@ -299,7 +298,6 @@ public class WhatsAppService {
             alertAgentTeam(from, "AGENT CHAT");
             return;
         }
-        // Forward any other message — acknowledge receipt
         sendMessageWithRetry(from, """
                 ✅ Message received — an agent will respond shortly.
 
@@ -398,35 +396,7 @@ public class WhatsAppService {
                 """);
     }
 
-    // ============ SESSION MANAGEMENT ============
-
-    private State getState(String from) {
-        Session session = sessions.get(from);
-        if (session == null) return State.NONE;
-
-        long elapsed = Instant.now().getEpochSecond() - session.updatedAt().getEpochSecond();
-        if (elapsed > SESSION_TIMEOUT_SECONDS) {
-            log.info("Session expired for {}", from);
-            sessions.remove(from);
-            return State.NONE;
-        }
-        return session.state();
-    }
-
-    private void setState(String from, State state) {
-        sessions.put(from, new Session(state, Instant.now()));
-    }
-
     // ============ SCHEDULED CLEANUP ============
-
-    @Scheduled(fixedRate = 3600000) // every hour
-    public void cleanupExpiredSessions() {
-        long now    = Instant.now().getEpochSecond();
-        int before  = sessions.size();
-        sessions.entrySet().removeIf(e ->
-                now - e.getValue().updatedAt().getEpochSecond() > SESSION_TIMEOUT_SECONDS);
-        log.info("Session cleanup: removed {} expired sessions", before - sessions.size());
-    }
 
     @Scheduled(fixedRate = 300000) // every 5 minutes
     public void cleanupProcessedMessages() {
@@ -491,10 +461,10 @@ public class WhatsAppService {
     private boolean isGreeting(String text) {
         if (text == null) return false;
         String lower = text.trim().toLowerCase();
-        return lower.equals("hi")            || lower.equals("hello") ||
-                lower.equals("hey")           || lower.equals("start") ||
-                lower.equals("hie")           || lower.equals("howzit") ||
-                lower.equals("good morning")  || lower.equals("good afternoon") ||
+        return lower.equals("hi")           || lower.equals("hello")    ||
+                lower.equals("hey")          || lower.equals("start")    ||
+                lower.equals("hie")          || lower.equals("howzit")   ||
+                lower.equals("good morning") || lower.equals("good afternoon") ||
                 lower.equals("good evening");
     }
 
