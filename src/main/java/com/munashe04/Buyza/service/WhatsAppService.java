@@ -22,7 +22,7 @@ public class WhatsAppService {
     private static final Logger log = LoggerFactory.getLogger(WhatsAppService.class);
 
     // ============ CONSTANTS ============
-    private static final long MESSAGE_DEDUP_WINDOW_SECS = 300;  // 5 minutes
+    private static final long MESSAGE_DEDUP_WINDOW_SECS = 300;
     private static final int  MAX_MESSAGES_PER_MINUTE   = 10;
     private static final int  MAX_LOG_MESSAGE_LENGTH    = 500;
 
@@ -31,12 +31,13 @@ public class WhatsAppService {
         NONE,
         AWAITING_ONLINE_ORDER_DETAILS,
         AWAITING_ASSISTED_ORDER_DETAILS,
+        AWAITING_ASSISTED_QUOTE_CONFIRMATION,
         AWAITING_QUOTE_CONFIRMATION,
         AWAITING_PAYMENT,
         TALKING_TO_AGENT
     }
 
-    // ============ IN-MEMORY STORES (non-session) ============
+    // ============ IN-MEMORY STORES ============
     private final Map<String, Long>       processedMessages = new ConcurrentHashMap<>();
     private final Map<String, List<Long>> rateLimitMap      = new ConcurrentHashMap<>();
 
@@ -67,8 +68,8 @@ public class WhatsAppService {
 
     // ============ MAIN ENTRY POINT ============
 
-    public void handleIncomingMessage(String from, String messageId, String type, String rawText) {
-
+    public void handleIncomingMessage(String from, String messageId,
+                                      String type, String rawText) {
         // 1. Deduplicate
         if (isDuplicate(messageId)) {
             log.info("Duplicate message {} from {} — ignoring", messageId, from);
@@ -77,11 +78,11 @@ public class WhatsAppService {
 
         // 2. Rate limit
         if (isRateLimited(from)) {
-            log.warn("Rate limit hit for {} — ignoring message", from);
+            log.warn("Rate limit hit for {} — ignoring", from);
             return;
         }
 
-        // 3. Handle non-text messages
+        // 3. Non-text messages
         if (!type.equals("text")) {
             handleNonTextMessage(from, type);
             return;
@@ -92,7 +93,7 @@ public class WhatsAppService {
 
         log.info("User {} | State: {} | Message: {}", from, currentState, text);
 
-        // 4. Always allow menu reset
+        // 4. Global commands — always available
         if (text.equalsIgnoreCase("menu") || text.equals("0")) {
             sessionService.setState(from, State.NONE);
             sendMainMenu(from);
@@ -101,12 +102,13 @@ public class WhatsAppService {
 
         // 5. Route based on state
         switch (currentState) {
-            case AWAITING_ONLINE_ORDER_DETAILS   -> handleOnlineOrderDetails(from, text);
-            case AWAITING_ASSISTED_ORDER_DETAILS -> handleAssistedOrderDetails(from, text);
-            case AWAITING_QUOTE_CONFIRMATION     -> handleQuoteConfirmation(from, text);
-            case AWAITING_PAYMENT                -> handlePaymentConfirmation(from, text);
-            case TALKING_TO_AGENT                -> handleTalkingToAgent(from, text);
-            default                              -> handleMenuSelection(from, text);
+            case AWAITING_ONLINE_ORDER_DETAILS        -> handleOnlineOrderDetails(from, text);
+            case AWAITING_ASSISTED_ORDER_DETAILS      -> handleAssistedOrderDetails(from, text);
+            case AWAITING_ASSISTED_QUOTE_CONFIRMATION -> handleAssistedQuoteConfirmation(from, text);
+            case AWAITING_QUOTE_CONFIRMATION          -> handleQuoteConfirmation(from, text);
+            case AWAITING_PAYMENT                     -> handlePaymentConfirmation(from, text);
+            case TALKING_TO_AGENT                     -> handleTalkingToAgent(from, text);
+            default                                   -> handleMenuSelection(from, text);
         }
     }
 
@@ -131,7 +133,7 @@ public class WhatsAppService {
         sendMessageWithRetry(from, response);
     }
 
-    // ============ STATE HANDLERS ============
+    // ============ MENU SELECTION ============
 
     private void handleMenuSelection(String from, String text) {
         if (isGreeting(text)) {
@@ -171,6 +173,8 @@ public class WhatsAppService {
         }
     }
 
+    // ============ ONLINE ORDER FLOW ============
+
     private void handleOnlineOrderDetails(String from, String text) {
         if (isBackCommand(text)) {
             sessionService.setState(from, State.NONE);
@@ -180,7 +184,7 @@ public class WhatsAppService {
         sendMessageWithRetry(from, """
                 ✅ Thank you! We've received your cart details.
 
-                An agent will get back to you with your final quote shortly.
+                An agent will review and send you a final quote shortly.
 
                 Would you like to proceed with this order once you receive the quote?
                 Reply *Yes* to confirm or *No* to cancel.
@@ -188,25 +192,6 @@ public class WhatsAppService {
                 """);
         sessionService.setState(from, State.AWAITING_QUOTE_CONFIRMATION);
         safeLog("Online Order Details", from, text, "-", "Details Provided");
-    }
-
-    private void handleAssistedOrderDetails(String from, String text) {
-        if (isBackCommand(text)) {
-            sessionService.setState(from, State.NONE);
-            sendMainMenu(from);
-            return;
-        }
-        sendMessageWithRetry(from, """
-                ✅ Thanks — we received your request.
-
-                Our team will review and reply with a quote within 3 working days.
-
-                Would you like to proceed once you receive the quote?
-                Reply *Yes* to confirm or *No* to cancel.
-                (Reply *Menu* anytime to start over)
-                """);
-        sessionService.setState(from, State.AWAITING_QUOTE_CONFIRMATION);
-        safeLog("Assisted Order Details", from, text, "-", "Details Provided");
     }
 
     private void handleQuoteConfirmation(String from, String text) {
@@ -219,11 +204,12 @@ public class WhatsAppService {
             sendMessageWithRetry(from, """
                     ✅ Perfect! A payment link will be sent to you shortly.
 
-                    Once you receive it, complete payment and reply *Paid* followed by your reference number.
+                    Once you receive it, complete the payment and reply:
+                    *Paid* followed by your reference number.
                     Example: "Paid REF123456"
                     """);
             sessionService.setState(from, State.AWAITING_PAYMENT);
-            safeLog("Quote Accepted", from, text, "-", "Awaiting Payment");
+            safeLog("Online Quote Accepted", from, text, "-", "Awaiting Payment");
 
         } else if (text.equalsIgnoreCase("no") || text.equalsIgnoreCase("n")) {
             sendMessageWithRetry(from, """
@@ -232,13 +218,69 @@ public class WhatsAppService {
                     Reply *Menu* to start a new order anytime.
                     """);
             sessionService.setState(from, State.NONE);
-            safeLog("Quote Rejected", from, text, "-", "Cancelled");
+            safeLog("Online Quote Rejected", from, text, "-", "Cancelled");
 
         } else {
             sendMessageWithRetry(from,
-                    "Please reply *Yes* to confirm or *No* to cancel.\n(Reply *Menu* to start over)");
+                    "Please reply *Yes* to confirm or *No* to cancel.\n" +
+                            "(Reply *Menu* to start over)");
         }
     }
+
+    // ============ ASSISTED ORDER FLOW ============
+
+    private void handleAssistedOrderDetails(String from, String text) {
+        if (isBackCommand(text)) {
+            sessionService.setState(from, State.NONE);
+            sendMainMenu(from);
+            return;
+        }
+        sendMessageWithRetry(from, """
+                ✅ Thanks — we've received your request!
+
+                Our team will research and send you a quote within 3 working days.
+                We'll message you right here on WhatsApp with the quote.
+
+                Once you receive our quote, reply *Quote* to let us know 
+                you're ready to review it and we'll walk you through next steps.
+
+                Reply *Menu* anytime to explore other options.
+                """);
+        sessionService.setState(from, State.AWAITING_ASSISTED_QUOTE_CONFIRMATION);
+        safeLog("Assisted Order Details", from, text, "-", "Details Provided");
+    }
+
+    private void handleAssistedQuoteConfirmation(String from, String text) {
+        if (isBackCommand(text)) {
+            sessionService.setState(from, State.NONE);
+            sendMainMenu(from);
+            return;
+        }
+
+        // Agent has sent quote externally — user replies "Quote" to trigger next step
+        if (text.equalsIgnoreCase("quote") || text.equalsIgnoreCase("received")) {
+            sendMessageWithRetry(from, """
+                    📋 Great — you've received your quote!
+
+                    Would you like to proceed with this order?
+                    Reply *Yes* to confirm or *No* to cancel.
+                    """);
+            sessionService.setState(from, State.AWAITING_QUOTE_CONFIRMATION);
+            safeLog("Assisted Quote Received", from, text, "-", "Quote Acknowledged");
+            return;
+        }
+
+        // User might be asking questions or sending follow-up messages
+        sendMessageWithRetry(from, """
+                ⏳ Our team is preparing your quote — it will arrive within 3 working days.
+
+                Once you receive it, reply *Quote* and we'll guide you through the next steps.
+
+                Reply *Menu* to go back or *4* to talk to an agent.
+                """);
+    }
+
+    // ============ PAYMENT FLOW ============
 
     private void handlePaymentConfirmation(String from, String text) {
         if (isBackCommand(text)) {
@@ -251,6 +293,7 @@ public class WhatsAppService {
                     💰 Thank you! We've noted your payment. 🎉
 
                     An agent will confirm and process your order shortly.
+                    You'll receive an update once your order is on its way! 🚚
 
                     Reply *Menu* to start a new order.
                     """);
@@ -278,6 +321,8 @@ public class WhatsAppService {
                     """);
         }
     }
+
+    // ============ AGENT FLOW ============
 
     private void handleTalkingToAgent(String from, String text) {
         if (isBackCommand(text)) {
@@ -398,16 +443,17 @@ public class WhatsAppService {
 
     // ============ SCHEDULED CLEANUP ============
 
-    @Scheduled(fixedRate = 300000) // every 5 minutes
+    @Scheduled(fixedRate = 300000)
     public void cleanupProcessedMessages() {
         long now   = Instant.now().getEpochSecond();
         int before = processedMessages.size();
         processedMessages.entrySet().removeIf(e ->
                 now - e.getValue() > MESSAGE_DEDUP_WINDOW_SECS);
-        log.info("Message dedup cleanup: removed {} entries", before - processedMessages.size());
+        log.info("Message dedup cleanup: removed {} entries",
+                before - processedMessages.size());
     }
 
-    @Scheduled(fixedRate = 60000) // every minute
+    @Scheduled(fixedRate = 60000)
     public void cleanupRateLimitMap() {
         long now = Instant.now().getEpochSecond();
         rateLimitMap.forEach((key, timestamps) ->
@@ -446,7 +492,8 @@ public class WhatsAppService {
             headers.setContentType(MediaType.APPLICATION_JSON);
             Map<String, String> payload = Map.of(
                     "text", String.format(
-                            "🚨 *PRIORITY REQUEST*\nFrom: +%s\nStage: %s\nRespond urgently!", from, context)
+                            "🚨 *PRIORITY REQUEST*\nFrom: +%s\nStage: %s\nRespond urgently!",
+                            from, context)
             );
             restTemplate.postForEntity(slackWebhookUrl,
                     new HttpEntity<>(payload, headers), String.class);
@@ -461,10 +508,10 @@ public class WhatsAppService {
     private boolean isGreeting(String text) {
         if (text == null) return false;
         String lower = text.trim().toLowerCase();
-        return lower.equals("hi")           || lower.equals("hello")    ||
-                lower.equals("hey")          || lower.equals("start")    ||
-                lower.equals("hie")          || lower.equals("howzit")   ||
-                lower.equals("good morning") || lower.equals("good afternoon") ||
+        return lower.equals("hi")            || lower.equals("hello")         ||
+                lower.equals("hey")           || lower.equals("start")         ||
+                lower.equals("hie")           || lower.equals("howzit")        ||
+                lower.equals("good morning")  || lower.equals("good afternoon")||
                 lower.equals("good evening");
     }
 
@@ -474,7 +521,8 @@ public class WhatsAppService {
         return lower.equals("back") || lower.equals("cancel") || lower.equals("0");
     }
 
-    private void safeLog(String type, String phone, String message, String quote, String status) {
+    private void safeLog(String type, String phone, String message,
+                         String quote, String status) {
         try {
             String truncated = message != null && message.length() > MAX_LOG_MESSAGE_LENGTH
                     ? message.substring(0, MAX_LOG_MESSAGE_LENGTH - 3) + "..."
@@ -497,7 +545,9 @@ public class WhatsAppService {
             } catch (RuntimeException e) {
                 tries++;
                 log.warn("Send attempt #{} failed for {}: {}", tries, to, e.getMessage());
-                try { Thread.sleep(400L * tries); } catch (InterruptedException ignored) {
+                try {
+                    Thread.sleep(400L * tries);
+                } catch (InterruptedException ignored) {
                     Thread.currentThread().interrupt();
                 }
             }
@@ -511,7 +561,9 @@ public class WhatsAppService {
         if (Objects.isNull(accessToken) || accessToken.isBlank())
             throw new IllegalStateException("accessToken not configured");
 
-        String url = String.format("https://graph.facebook.com/v22.0/%s/messages", phoneNumberId);
+        String url = String.format(
+                "https://graph.facebook.com/v22.0/%s/messages", phoneNumberId);
+
         HttpHeaders headers = new HttpHeaders();
         headers.setBearerAuth(accessToken);
         headers.setContentType(MediaType.APPLICATION_JSON);
@@ -528,7 +580,8 @@ public class WhatsAppService {
             ResponseEntity<String> resp = restTemplate.postForEntity(url, req, String.class);
             log.info("Sent WhatsApp message to {} -> HTTP {}", to, resp.getStatusCodeValue());
         } catch (HttpClientErrorException e) {
-            log.error("WhatsApp API error: {} -> {}", e.getStatusCode(), e.getResponseBodyAsString());
+            log.error("WhatsApp API error: {} -> {}",
+                    e.getStatusCode(), e.getResponseBodyAsString());
             throw new RuntimeException("WhatsApp API error " + e.getStatusCode());
         } catch (Exception e) {
             log.error("Error sending message: {}", e.getMessage(), e);
