@@ -31,7 +31,6 @@ dependencies {
 	implementation ("com.google.apis:google-api-services-sheets:v4-rev20240402-2.0.0")
 	implementation("com.google.auth:google-auth-library-oauth2-http:1.38.0")
 	implementation ("org.springframework.boot:spring-boot-starter-data-jpa")
-	runtimeOnly ("org.postgresql:postgresql")
 
 
 
